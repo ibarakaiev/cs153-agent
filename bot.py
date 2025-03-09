@@ -57,7 +57,7 @@ async def on_message(message: discord.Message):
     logger.info(f"Processing message from {message.author}: {message.content}")
     response = await agent.run(message)
 
-    # Send the response back to the channel
+    # Simply send the response - our agent will ensure it's under Discord's limit
     await message.reply(response)
 
 

@@ -154,3 +154,27 @@ Check out this finalized [weather agent bot](https://github.com/CS-153/weather-a
 
 If you’re seeing this error, it probably means that your terminal is not open in the right folder. Make sure that it is open inside the folder that contains `bot.py` and `.env`
 # cs153-agent
+
+## Parallel Processing Pipeline
+
+This bot implements a parallel processing pipeline for complex queries, particularly useful for "Best of N" comparison questions. The pipeline follows these steps:
+
+1. **Query Decomposition**: Complex queries are broken down into multiple independent tasks using the Mistral API.
+2. **Parallel Processing**: Each task is executed concurrently to maximize efficiency.
+3. **Result Synthesis**: The individual results are combined into a coherent final response.
+
+### Benefits
+
+- More thorough responses for complex questions
+- Faster processing through parallelization
+- Better handling of multi-faceted queries and comparisons
+
+### How It Works
+
+When you send a message to the bot:
+1. If it's a simple query (less than 15 words), it's processed directly
+2. For complex queries, the decomposition engine breaks it into multiple task prompts
+3. These tasks are processed in parallel using Mistral's API
+4. A final synthesis step combines the results into a coherent answer
+
+This approach works particularly well for questions like "Which is better, X or Y?" or "Compare options A, B, and C."
