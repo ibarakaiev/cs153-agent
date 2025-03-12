@@ -1,9 +1,12 @@
 import os
 import re
 import asyncio
-from typing import List, Dict, Any, AsyncIterator
+from typing import List, Dict, Any, AsyncIterator, Optional
 from mistralai import Mistral
 import discord
+import requests
+import json
+import aiohttp
 
 from prompts import DECOMPOSITION_PROMPT, SYNTHESIS_PROMPT
 
@@ -174,11 +177,123 @@ class SynthesisGenerator:
         return response
 
 
+class PerplexitySearchProvider:
+    """Handles search queries to Perplexity Sonar Pro API"""
+    
+    def __init__(self):
+        self.api_key = os.getenv("PERPLEXITY_API_KEY")
+        self.base_url = "https://api.perplexity.ai/chat/completions"
+        
+    async def search(self, query: str, max_results: int = 5) -> Dict[str, Any]:
+        """
+        Search for literature related to the query using Perplexity Sonar Pro
+        
+        Args:
+            query: The research direction or topic to search for
+            max_results: Maximum number of results to return
+            
+        Returns:
+            Dictionary containing search results and metadata
+        """
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json"
+        }
+        
+        # Create a search-optimized prompt
+        search_prompt = f"Conduct a literature review on: {query}. Focus on peer-reviewed academic papers, research methodologies, key findings, and recent developments. Include relevant citations."
+        
+        data = {
+            "model": "sonar-pro",  # Using Sonar model for literature search
+            "messages": [
+                {"role": "system", "content": "You are a research assistant conducting literature reviews. Provide comprehensive academic information with proper citations."},
+                {"role": "user", "content": search_prompt}
+            ],
+            "temperature": 0.2,  # Lower temperature for more factual responses
+            "max_tokens": 1500,
+            "return_citations": True
+        }
+        
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(self.base_url, headers=headers, json=data) as response:
+                    if response.status == 200:
+                        result = await response.json()
+                        return {
+                            "success": True,
+                            "results": result["choices"][0]["message"]["content"],
+                            "citations": result.get("citations", []),
+                            "query": query
+                        }
+                    else:
+                        error_text = await response.text()
+                        return {
+                            "success": False,
+                            "error": f"Search failed with status {response.status}: {error_text}",
+                            "query": query
+                        }
+        except Exception as e:
+            return {
+                "success": False,
+                "error": f"Search request failed: {str(e)}",
+                "query": query
+            }
+
+
+class ResearchFramer:
+    """Frames user queries as research directions"""
+    
+    def __init__(self, llm_provider: MistralProvider):
+        self.llm_provider = llm_provider
+        
+    async def frame_as_research_direction(self, user_query: str) -> Dict[str, Any]:
+        """
+        Transform a user query into a well-formed research direction
+        
+        Args:
+            user_query: The original user message
+            
+        Returns:
+            Dictionary with the framed research direction and metadata
+        """
+        framing_prompt = f"""
+        Transform the following user query into a well-formed research direction:
+        
+        USER QUERY: {user_query}
+        
+        Your task:
+        1. Identify the core research topic or question
+        2. Reformulate it as an academic research direction
+        3. Expand slightly to capture related important aspects
+        4. Ensure it's specific enough for meaningful literature search
+        5. Format it as a clear research direction statement
+        
+        RESEARCH DIRECTION:
+        """
+        
+        response = await self.llm_provider.generate_completion_sync(
+            [
+                {"role": "system", "content": "You are a research assistant that helps frame informal queries as formal research directions."},
+                {"role": "user", "content": framing_prompt}
+            ],
+            max_tokens=300
+        )
+        
+        return {
+            "original_query": user_query,
+            "research_direction": response["content"].strip(),
+            "input_tokens": response.get("input_tokens", 0),
+            "output_tokens": response.get("output_tokens", 0)
+        }
+
+
 class MistralAgent:
     def __init__(self):
         self.llm_provider = MistralProvider()
         self.task_decomposer = TaskDecomposer(self.llm_provider)
         self.synthesis_generator = SynthesisGenerator(self.llm_provider)
+        self.research_framer = ResearchFramer(self.llm_provider)
+        self.search_provider = PerplexitySearchProvider()
 
     async def process_task(self, task: Dict[str, str]) -> Dict[str, Any]:
         """Process a single task"""
@@ -209,11 +324,60 @@ class MistralAgent:
                 "output_tokens": 0,
             }
 
+    async def process_research_query(self, query: str) -> Dict[str, Any]:
+        """
+        Process a research query through the literature review pipeline
+        
+        Args:
+            query: The user's research query
+            
+        Returns:
+            Dictionary with search results and metadata
+        """
+        # Step 1: Frame the query as a research direction
+        framed = await self.research_framer.frame_as_research_direction(query)
+        
+        # Step 2: Perform literature search
+        search_results = await self.search_provider.search(framed["research_direction"])
+        
+        return {
+            "original_query": query,
+            "framed_direction": framed["research_direction"],
+            "search_results": search_results,
+            "success": search_results.get("success", False)
+        }
+
     async def run(self, message: discord.Message):
         try:
             query = message.content
             print(f"Processing query: {query}")
             
+            print("Using online literature review pipeline")
+            
+            # Process as research query
+            results = await self.process_research_query(query)
+            
+            if results["success"]:
+                response = f"**Research Direction:**\n{results['framed_direction']}\n\n"
+                response += f"**Literature Review:**\n{results['search_results']['results']}"
+                
+                # Add citations if available
+                if results['search_results'].get('citations'):
+                    response += "\n\n**Sources:**\n"
+                    for i, citation in enumerate(results['search_results']['citations'][:5]):
+                        response += f"{i+1}. {citation}\n"
+                        
+                # Ensure response fits in Discord's message limit
+                if len(response) > 2000:
+                    response = response[:1997] + "..."
+                    
+                return response
+            else:
+                # Fall back to normal processing if literature search fails
+                print(f"Literature search failed: {results['search_results'].get('error')}")
+                pass  # Continue to standard processing below
+            
+            # The rest of the existing run method for non-research queries or fallback
             # For simple queries, skip decomposition
             if len(query.split()) < 15:
                 print("Query is simple, skipping decomposition")
