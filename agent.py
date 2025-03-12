@@ -502,6 +502,31 @@ Provide concrete, specific assessments backed by the literature context."""},
             "count": len(reviews)
         }
     
+    def _format_reviews_summary(self, reviews: List[Dict[str, str]]) -> str:
+        """Format a summary of reviews for comparison"""
+        summary = ""
+        
+        for i, review in enumerate(reviews):
+            title = review.get("title", f"Direction {i+1}")
+            summary += f"DIRECTION {i+1}: {title}\n"
+            
+            # Add important sections
+            if "novelty" in review:
+                summary += f"Gap Analysis: {review['novelty'][:150]}...\n"
+            
+            if "feasibility" in review:
+                summary += f"Technical Feasibility: {review['feasibility'][:150]}...\n"
+            
+            if "impact" in review:
+                summary += f"Impact: {review['impact'][:150]}...\n"
+                
+            if "priority" in review:
+                summary += f"Priority: {review['priority']}\n"
+            
+            summary += "\n"
+            
+        return summary
+    
     async def _generate_comparison(self, directions: List[Dict[str, str]], reviews: List[Dict[str, str]]) -> str:
         """Generate a strategic comparison of research directions"""
         
@@ -572,32 +597,6 @@ Keep response under 2000 chars. Be specific and actionable."""
         
         # If all else fails, return empty string
         return ""
-
-    def _format_reviews_summary(self, reviews: List[Dict[str, str]]) -> str:
-        """Format reviews into a concise summary for comparison"""
-        summary = ""
-        
-        for i, review in enumerate(reviews):
-            title = review.get("title", f"Direction {i+1}")
-            question = review.get("question", "No question provided")
-            priority = review.get("priority", "No priority assessment")
-            
-            summary += f"DIRECTION {i+1}: {title}\n"
-            summary += f"QUESTION: {question}\n"
-            summary += f"PRIORITY: {priority}\n"
-            
-            # Add key metrics if available
-            for key in ["feasibility", "novelty", "impact"]:
-                if key in review and review[key]:
-                    # Truncate long values
-                    value = review[key]
-                    if len(value) > 100:
-                        value = value[:97] + "..."
-                    summary += f"{key.upper()}: {value}\n"
-            
-            summary += "\n"
-            
-        return summary
 
 
 class ResearchDirectionsGenerator:
@@ -909,6 +908,7 @@ class RecommendationSynthesizer:
             
             # Extract the necessary information from inputs
             lit_review = search_results.get("results", "")[:2000]  # Limit to avoid token overflow
+            citations = search_results.get("citations", [])
             
             # Build different prompts based on available data
             if reviews_result.get("success", False) and reviews_result.get("comparison", ""):
@@ -947,7 +947,8 @@ Format next steps as numbered lists (1., 2., etc.) and ensure each section has s
                     "success": False,
                     "error": "Synthesis generated empty or too short response",
                     "recommendations": "Could not generate detailed recommendations. Please try refining your query.",
-                    "next_steps": [{"number": "1", "description": "Try a more specific research query"}]
+                    "next_steps": [{"number": "1", "description": "Try a more specific research query"}],
+                    "citations": []
                 }
             
             # Extract next steps section
@@ -985,7 +986,8 @@ Format next steps as numbered lists (1., 2., etc.) and ensure each section has s
                 "success": True,
                 "recommendations": recommendations,
                 "next_steps": next_steps,
-                "full_synthesis": content
+                "full_synthesis": content,
+                "citations": citations
             }
             
         except Exception as e:
@@ -999,7 +1001,8 @@ Format next steps as numbered lists (1., 2., etc.) and ensure each section has s
                 "success": False,
                 "error": error_message,
                 "recommendations": "Could not generate recommendations due to an error. Please try again with a different query.",
-                "next_steps": [{"number": "1", "description": "Try a more specific research query"}]
+                "next_steps": [{"number": "1", "description": "Try a more specific research query"}],
+                "citations": []
             }
     
     def _extract_section(self, content: str, section_name: str) -> str:
@@ -1177,14 +1180,6 @@ class MistralAgent:
                         search_results["results"]
                     )
                     print("✅ Direction evaluations completed")
-                    
-                    # Send a message with the evaluation summary
-                    if reviews_result.get("success", False) and reviews_result.get("comparison"):
-                        evaluation_summary = f"## Direction Evaluation Summary\n{reviews_result['comparison']}"
-                        # Check if summary exceeds Discord's character limit
-                        if len(evaluation_summary) > 2000:
-                            evaluation_summary = evaluation_summary[:1997] + "..."
-                        await message.channel.send(evaluation_summary)
                 else:
                     print("⚠️ Skipping direction evaluation - no valid directions generated")
                 
@@ -1197,6 +1192,43 @@ class MistralAgent:
                     reviews_result
                 )
                 print("✅ Recommendation synthesis completed")
+                
+                # Create the final response
+                response = f"## Research on: {framed_direction}\n\n"
+                
+                if synthesis_result.get("success", False):
+                    response += f"### Recommendations\n{synthesis_result.get('recommendations', 'No specific recommendations available.')}\n\n"
+                    
+                    # Add next steps
+                    if synthesis_result.get("next_steps", []):
+                        response += "### Next Steps\n"
+                        for step in synthesis_result.get("next_steps", []):
+                            response += f"{step.get('number', '•')}. {step.get('description', '')}\n"
+                        response += "\n"
+                    
+                    # Add citations if available
+                    citations = synthesis_result.get("citations", [])
+                    if citations:
+                        response += "### Recommended Reading\nThese sources provide additional context for your research:\n\n"
+                        for i, citation in enumerate(citations[:5]):  # Limit to 5 citations to avoid too long responses
+                            response += f"{i+1}. {citation}\n"
+                        response += "\n"
+                        if len(citations) > 5:
+                            response += f"*Plus {len(citations) - 5} more sources not shown here.*\n\n"
+                else:
+                    # Fallback if synthesis failed
+                    response += f"I was able to find information on your query, but had trouble synthesizing recommendations.\n\n"
+                    response += f"Here's a summary of what I found:\n\n"
+                    
+                    # Include a preview of search results
+                    results_preview = search_results.get("results", "")[:500] + "..." if len(search_results.get("results", "")) > 500 else search_results.get("results", "")
+                    response += f"{results_preview}\n\n"
+                    
+                    # Add basic next steps
+                    response += "### Suggested Next Steps\n"
+                    response += "1. Review the literature summary above\n"
+                    response += "2. Consider narrowing your research focus\n"
+                    response += "3. Try a follow-up query with 'refine:' prefix\n"
                 
                 return {
                     "original_query": query,
@@ -1293,7 +1325,7 @@ class MistralAgent:
                 directions_result = await self.directions_generator.generate_directions(search_results)
                 print(f"💡 Generated {directions_result.get('count', 0)} research directions")
                 
-                await status_message.edit(content=f"📚 **Step 1/5:** Query framed as research direction ✅\n\n*Research direction:* **{framed_direction}**\n\n🔍 **Step 2/5:** Literature search complete ✅\n\n💡 **Step 3/5:** Generated {directions_result.get('count', 0)} research directions ✅\n\n⚖️ **Step 4/5:** Evaluating research directions...")
+                await status_message.edit(content=f"📚 **Step 1/5:** Query framed as research direction ✅\n\n*Research direction:* **{framed_direction}**\n\n🔍 **Step 2/5:** Literature search complete ✅\n\n💡 **Step 3/5:** Generated {directions_result.get('count', 0)} research directions ✅\n\n⚖️ **Step 4/5:** Evaluating research directions in parallel...")
                 
                 # Step 4: Review research directions
                 reviews_result = {}
@@ -1304,18 +1336,10 @@ class MistralAgent:
                         search_results["results"]
                     )
                     print("✅ Direction evaluations completed")
-                    
-                    # Send a message with the evaluation summary
-                    if reviews_result.get("success", False) and reviews_result.get("comparison"):
-                        evaluation_summary = f"## Direction Evaluation Summary\n\n{reviews_result['comparison']}"
-                        # Check if summary exceeds Discord's character limit
-                        if len(evaluation_summary) > 2000:
-                            evaluation_summary = evaluation_summary[:1997] + "..."
-                        await message.channel.send(evaluation_summary)
                 else:
                     print("⚠️ Skipping direction evaluation - no valid directions generated")
                 
-                await status_message.edit(content=f"📚 **Step 1/5:** Query framed as research direction ✅\n\n*Research direction:* **{framed_direction}**\n\n🔍 **Step 2/5:** Literature search complete ✅\n\n💡 **Step 3/5:** Generated {directions_result.get('count', 0)} research directions ✅\n\n⚖️ **Step 4/5:** Research directions evaluated ✅\n\n🧠 **Step 5/5:** Synthesizing final recommendations...")
+                await status_message.edit(content=f"📚 **Step 1/5:** Query framed as research direction ✅\n\n*Research direction:* **{framed_direction}**\n\n🔍 **Step 2/5:** Literature search complete ✅\n\n💡 **Step 3/5:** Generated {directions_result.get('count', 0)} research directions ✅\n\n⚖️ **Step 4/5:** Research directions evaluated in parallel ✅\n\n🧠 **Step 5/5:** Synthesizing final recommendations...")
                 
                 # Step 5: Synthesize final recommendations
                 print("🧠 Step 5: Synthesizing final recommendations...")
@@ -1339,6 +1363,16 @@ class MistralAgent:
                         for step in synthesis_result.get("next_steps", []):
                             response += f"{step.get('number', '•')}. {step.get('description', '')}\n"
                         response += "\n"
+                    
+                    # Add citations if available
+                    citations = synthesis_result.get("citations", [])
+                    if citations:
+                        response += "### Recommended Reading\nThese sources provide additional context for your research:\n\n"
+                        for i, citation in enumerate(citations[:5]):  # Limit to 5 citations to avoid too long responses
+                            response += f"{i+1}. {citation}\n"
+                        response += "\n"
+                        if len(citations) > 5:
+                            response += f"*Plus {len(citations) - 5} more sources not shown here.*\n\n"
                 else:
                     # Fallback if synthesis failed
                     response += f"I was able to find information on your query, but had trouble synthesizing recommendations.\n\n"
