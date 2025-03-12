@@ -27,10 +27,7 @@ class MistralProvider:
     ) -> Dict[str, Any]:
         """Implementation of non-streaming completion for Mistral"""
         try:
-            # Set a default max_tokens if not provided to limit response size
-            if "max_tokens" not in kwargs:
-                kwargs["max_tokens"] = 2048
-                
+            # Remove default max_tokens setting
             response = await self.client.chat.complete_async(
                 model=self.model,
                 messages=messages,
@@ -38,7 +35,6 @@ class MistralProvider:
             )
 
             # Return response content and (placeholder) token usage
-            # Note: Mistral client might not provide token usage like Anthropic does
             return {
                 "content": response.choices[0].message.content,
                 "input_tokens": 0,  # Placeholder - Mistral might not provide this
@@ -195,48 +191,111 @@ class PerplexitySearchProvider:
         Returns:
             Dictionary containing search results and metadata
         """
+        if not self.api_key:
+            print("❌ Perplexity API key is not set")
+            return {
+                "success": False,
+                "error": "Perplexity API key not configured",
+                "results": "",
+                "citations": []
+            }
+            
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json"
         }
         
-        # Create a search-optimized prompt
-        search_prompt = f"Conduct a literature review on: {query}. Focus on peer-reviewed academic papers, research methodologies, key findings, and recent developments. Include relevant citations."
+        # Create a more concise search-optimized prompt
+        search_prompt = f"""Conduct a focused, concise literature review on: {query}
+        
+        Include:
+        1. Key papers (authors, years)
+        2. Major methodologies
+        3. Significant findings
+        4. Research gaps
+        5. Future directions
+        
+        Be thorough but concise. Provide specific academic citations using [n] format."""
         
         data = {
-            "model": "sonar-pro",  # Using Sonar model for literature search
+            "model": "sonar-pro",  # Updated to a valid Perplexity model
             "messages": [
-                {"role": "system", "content": "You are a research assistant conducting literature reviews. Provide comprehensive academic information with proper citations."},
+                {"role": "system", "content": "You are a research assistant conducting literature reviews. Be thorough but concise. Prioritize academic sources and provide proper citations."},
                 {"role": "user", "content": search_prompt}
             ],
-            "temperature": 0.2,  # Lower temperature for more factual responses
-            "max_tokens": 1500,
-            "return_citations": True
+            "temperature": 0.2  # Lower temperature for more factual responses
+            # No max_tokens - let it generate a complete response
         }
         
         try:
+            print(f"🔍 Sending search request to Perplexity API for: {query[:50]}...")
+            print(f"📝 Using model: {data['model']}")
+            
             async with aiohttp.ClientSession() as session:
                 async with session.post(self.base_url, headers=headers, json=data) as response:
-                    if response.status == 200:
-                        result = await response.json()
-                        return {
-                            "success": True,
-                            "results": result["choices"][0]["message"]["content"],
-                            "citations": result.get("citations", []),
-                            "query": query
-                        }
-                    else:
-                        error_text = await response.text()
+                    response_text = await response.text()
+                    print(f"📡 Perplexity API response status: {response.status}")
+                    
+                    if response.status != 200:
+                        print(f"❌ Error response: {response_text[:200]}...")
                         return {
                             "success": False,
-                            "error": f"Search failed with status {response.status}: {error_text}",
-                            "query": query
+                            "error": f"Search failed with status {response.status}: {response_text[:500]}",
+                            "results": "",
+                            "citations": []
+                        }
+                        
+                    try:
+                        response_json = json.loads(response_text)
+                        print(f"📊 Response JSON keys: {list(response_json.keys())}")
+                        
+                        # Extract content from the correct location in the response
+                        # The Perplexity API returns the content in choices[0].message.content
+                        if "choices" in response_json and len(response_json["choices"]) > 0:
+                            content = response_json["choices"][0]["message"]["content"]
+                            print(f"✅ Successfully extracted content: {len(content)} chars")
+                            
+                            # Extract citations from the message content using regex
+                            citations = []
+                            citation_matches = re.findall(r'\[(\d+)\]\s+(.*?)(?=\n\[|\n\n|$)', content, re.DOTALL)
+                            for match in citation_matches:
+                                citations.append(match[1].strip())
+                                
+                            print(f"📚 Extracted {len(citations)} citations from content")
+                            
+                            return {
+                                "success": True,
+                                "results": content,
+                                "citations": citations,
+                                "query": query
+                            }
+                        else:
+                            print("❌ No 'choices' found in response")
+                            print(f"📄 Response: {response_text[:200]}...")
+                            return {
+                                "success": False,
+                                "error": "Invalid response format from Perplexity API",
+                                "results": "",
+                                "citations": []
+                            }
+                    except json.JSONDecodeError:
+                        print("❌ Failed to parse JSON response")
+                        return {
+                            "success": False,
+                            "error": f"Failed to parse JSON response: {response_text[:200]}...",
+                            "results": "",
+                            "citations": []
                         }
         except Exception as e:
+            error_message = f"Search request failed: {str(e)}"
+            print(f"❌ Exception during search: {error_message}")
+            import traceback
+            traceback.print_exc()
             return {
                 "success": False,
-                "error": f"Search request failed: {str(e)}",
-                "query": query
+                "error": error_message,
+                "results": "",
+                "citations": []
             }
 
 
@@ -246,45 +305,725 @@ class ResearchFramer:
     def __init__(self, llm_provider: MistralProvider):
         self.llm_provider = llm_provider
         
-    async def frame_as_research_direction(self, user_query: str) -> Dict[str, Any]:
+    async def frame_as_research_direction(self, query: str) -> Dict[str, Any]:
         """
-        Transform a user query into a well-formed research direction
+        Frame a user query as a formal research direction
         
         Args:
-            user_query: The original user message
+            query: The user's original query
             
         Returns:
             Dictionary with the framed research direction and metadata
         """
-        framing_prompt = f"""
-        Transform the following user query into a well-formed research direction:
+        try:
+            # Create a more concise prompt
+            framing_prompt = f"""Reframe this query as a clear, concise academic research direction:
+
+Query: {query}
+
+Return only the research direction without explanation or commentary."""
+            
+            # Get framed direction from LLM
+            response = await self.llm_provider.generate_completion_sync(
+                [
+                    {"role": "system", "content": "You are a research question formulation assistant. Your job is to convert informal queries into precise, searchable research directions."},
+                    {"role": "user", "content": framing_prompt}
+                ]
+            )
+            
+            # Extract framed direction
+            research_direction = response["content"].strip()
+            
+            # If response is too long, truncate it
+            if len(research_direction) > 150:
+                research_direction = research_direction[:147] + "..."
+            
+            print(f"✅ Framed query as research direction: {research_direction}")
+            
+            return {
+                "success": True,
+                "research_direction": research_direction,
+                "original_query": query,
+                "input_tokens": response.get("input_tokens", 0),
+                "output_tokens": response.get("output_tokens", 0)
+            }
+        except Exception as e:
+            error_message = f"Error framing research direction: {str(e)}"
+            print(f"❌ {error_message}")
+            return {
+                "success": False,
+                "error": error_message,
+                "research_direction": query,  # Fall back to original query
+                "original_query": query
+            }
+
+
+class DirectionReviewer:
+    """Reviews and evaluates potential research directions"""
+    
+    def __init__(self, llm_provider: MistralProvider):
+        self.llm_provider = llm_provider
+    
+    async def review_direction(self, direction: Dict[str, str], literature_context: str) -> Dict[str, Any]:
+        """
+        Review a single research direction for feasibility, novelty, and impact
         
-        USER QUERY: {user_query}
+        Args:
+            direction: Dictionary containing the research direction details
+            literature_context: Context from the literature review
+            
+        Returns:
+            Dictionary with the review results
+        """
+        # Create a comprehensive review prompt
+        review_prompt = f"""
+        Evaluate the following research direction based on the literature context:
         
-        Your task:
-        1. Identify the core research topic or question
-        2. Reformulate it as an academic research direction
-        3. Expand slightly to capture related important aspects
-        4. Ensure it's specific enough for meaningful literature search
-        5. Format it as a clear research direction statement
+        RESEARCH DIRECTION: {direction.get('title', 'Untitled')}
         
-        RESEARCH DIRECTION:
+        RESEARCH QUESTION: {direction.get('question', 'No question provided')}
+        
+        RATIONALE: {direction.get('rationale', 'No rationale provided')}
+        
+        LITERATURE CONTEXT:
+        {literature_context[:2000]}
+        
+        REQUIRED OUTPUT FORMAT - USE THESE EXACT SECTION HEADERS WITH COLONS:
+        
+        FEASIBILITY: [Detailed analysis of how feasible this research direction is]
+        
+        NOVELTY: [Assessment of how novel this direction is compared to existing research]
+        
+        IMPACT: [Evaluation of potential impact if successful]
+        
+        PROS: [List key advantages of this research direction]
+        
+        CONS: [List important limitations or challenges]
+        
+        RESOURCES: [Outline resources needed for this research]
+        
+        PRIORITY: [Rate as HIGH, MEDIUM, or LOW priority]
+        """
+        
+        # Get review from LLM with stronger formatting instructions
+        response = await self.llm_provider.generate_completion_sync(
+            [
+                {"role": "system", "content": """You are a research evaluator who analyzes research directions for feasibility, novelty, and impact.
+
+You MUST follow the output format instructions precisely, using the exact section headers requested with the exact capitalization shown."""},
+                {"role": "user", "content": review_prompt}
+            ]
+        )
+        
+        # Extract sections using regex
+        review_content = response["content"]
+        review = {
+            "title": direction.get('title', 'Untitled'),
+            "question": direction.get('question', 'No question provided'),
+            "feasibility": self._extract_section(review_content, "FEASIBILITY"),
+            "novelty": self._extract_section(review_content, "NOVELTY"),
+            "impact": self._extract_section(review_content, "IMPACT"),
+            "pros": self._extract_section(review_content, "PROS"),
+            "cons": self._extract_section(review_content, "CONS"),
+            "resources": self._extract_section(review_content, "RESOURCES"),
+            "priority": self._extract_section(review_content, "PRIORITY"),
+        }
+        
+        return review
+    
+    async def compare_directions(self, directions: List[Dict[str, str]], literature_context: str) -> Dict[str, Any]:
+        """
+        Compare multiple research directions in parallel
+        
+        Args:
+            directions: List of research directions to compare
+            literature_context: Context from the literature review
+            
+        Returns:
+            Dictionary with detailed reviews and comparison
+        """
+        if not directions:
+            return {
+                "success": False,
+                "error": "No research directions provided to review",
+                "reviews": []
+            }
+        
+        print(f"🔍 Reviewing {len(directions)} research directions in parallel...")
+        
+        # Process each direction review in parallel
+        review_tasks = [self.review_direction(direction, literature_context) for direction in directions]
+        reviews = await asyncio.gather(*review_tasks)
+        
+        print("✅ Direction reviews completed")
+        
+        # Generate a comparison of the directions
+        comparison = await self._generate_comparison(directions, reviews)
+        
+        return {
+            "success": True,
+            "reviews": reviews,
+            "comparison": comparison,
+            "count": len(reviews)
+        }
+    
+    async def _generate_comparison(self, directions: List[Dict[str, str]], reviews: List[Dict[str, str]]) -> str:
+        """Generate a comparison summary of all research directions"""
+        
+        # Create a summarized version of all reviews for the comparison
+        reviews_summary = ""
+        for i, review in enumerate(reviews):
+            reviews_summary += f"DIRECTION {i+1}: {review.get('title', 'Untitled')}\n"
+            reviews_summary += f"Question: {review.get('question', 'Not specified')}\n"
+            reviews_summary += f"Feasibility: {review.get('feasibility', 'Not evaluated')}\n"
+            reviews_summary += f"Novelty: {review.get('novelty', 'Not evaluated')}\n"
+            reviews_summary += f"Impact: {review.get('impact', 'Not evaluated')}\n\n"
+        
+        comparison_prompt = f"""
+        Compare the following research directions that have been reviewed:
+        
+        {reviews_summary}
+        
+        Please provide:
+        1. A ranked list of these directions from most to least promising
+        2. Key differentiators between the directions
+        3. Any synergies or combinations that might be beneficial
+        4. Overall recommendation on which direction(s) to pursue
+        
+        Format your response using clear headings and concise explanations.
         """
         
         response = await self.llm_provider.generate_completion_sync(
             [
-                {"role": "system", "content": "You are a research assistant that helps frame informal queries as formal research directions."},
-                {"role": "user", "content": framing_prompt}
+                {"role": "system", "content": "You are a research advisor who compares different research directions and provides strategic recommendations."},
+                {"role": "user", "content": comparison_prompt}
             ],
-            max_tokens=300
+            max_tokens=1000
         )
         
-        return {
-            "original_query": user_query,
-            "research_direction": response["content"].strip(),
-            "input_tokens": response.get("input_tokens", 0),
-            "output_tokens": response.get("output_tokens", 0)
-        }
+        return response["content"]
+    
+    def _extract_section(self, content: str, section_name: str) -> str:
+        """Extract a specific section from the structured content with better handling of variations"""
+        # Try exact format first (SECTION_NAME:)
+        pattern = f"{section_name}:(.*?)(?:(?:[A-Z_]+:)|$)"
+        match = re.search(pattern, content, re.DOTALL)
+        if match:
+            return match.group(1).strip()
+        
+        # Try variations with flexible capitalization and optional underscore/space
+        # This will match "Next Steps:", "NEXT STEPS:", "next_steps:", etc.
+        section_pattern = section_name.replace('_', '[_ ]?')
+        pattern = f"(?i){section_pattern}:(.*?)(?:(?:[A-Za-z _]+:)|$)"
+        match = re.search(pattern, content, re.DOTALL)
+        if match:
+            return match.group(1).strip()
+        
+        # Try looking for section with ## or other markdown headers
+        pattern = f"(?i)(?:##\\s*|\\*\\*\\s*){section_pattern.replace('_', '[_ ]?')}(?:\\s*:|\\s*\\*\\*)?\\s*(.*?)(?:(?:##|\\*\\*)[A-Za-z _]+|$)"
+        match = re.search(pattern, content, re.DOTALL)
+        if match:
+            return match.group(1).strip()
+        
+        # If all else fails, return empty string
+        return ""
+
+
+class ResearchDirectionsGenerator:
+    """Generates potential research directions based on literature review results"""
+    
+    def __init__(self, llm_provider: MistralProvider):
+        self.llm_provider = llm_provider
+        
+    async def generate_directions(self, search_results: Dict[str, Any], count: int = 3) -> Dict[str, Any]:
+        """
+        Generate multiple potential research directions based on literature review
+        
+        Args:
+            search_results: Results from the literature search
+            count: Number of research directions to generate (default: 3)
+            
+        Returns:
+            Dictionary with generated research directions and metadata
+        """
+        if not search_results.get("success", False):
+            print("❌ Cannot generate directions: Search was not successful")
+            return {
+                "success": False,
+                "error": "Cannot generate research directions without successful literature search",
+                "directions": []
+            }
+        
+        # Extract the content from search results
+        content = search_results.get("results", "")
+        
+        if not content or len(content) < 100:
+            print(f"❌ Search results content is too short: {len(content)} chars")
+            sample = content[:50] + "..." if content else "[empty]"
+            print(f"📄 Content sample: {sample}")
+            return {
+                "success": False,
+                "error": "Search results content is insufficient for generating directions",
+                "directions": []
+            }
+        
+        print(f"📝 Generating directions from {len(content)} chars of content")
+        
+        # Create a prompt with clearer formatting instructions
+        generation_prompt = f"""
+        Based on the following literature review, generate {count} potential research directions or hypotheses:
+        
+        LITERATURE REVIEW:
+        {content[:4000]}
+        
+        REQUIRED OUTPUT FORMAT:
+        You must format your response exactly as shown below, using these exact headings:
+        
+        DIRECTION_1_TITLE: [Brief title for the research direction]
+        DIRECTION_1_QUESTION: [The specific research question]
+        DIRECTION_1_RATIONALE: [Why this direction is promising]
+        DIRECTION_1_METHODOLOGY: [Potential research methodologies]
+        DIRECTION_1_GAPS: [Gaps this addresses]
+        
+        DIRECTION_2_TITLE: [Brief title for the research direction]
+        DIRECTION_2_QUESTION: [The specific research question]
+        ...
+        
+        Continue this format for all {count} directions. Do not include any other sections or explanatory text.
+        """
+        
+        try:
+            # Get directions from LLM with stronger formatting instructions
+            response = await self.llm_provider.generate_completion_sync(
+                [
+                    {"role": "system", "content": """You are a research direction generator who identifies promising research opportunities based on literature reviews.
+
+You MUST follow the output format instructions precisely, using the exact section headers requested with the exact capitalization and underscores shown."""},
+                    {"role": "user", "content": generation_prompt}
+                ]
+            )
+            
+            # Parse the response to extract research directions
+            generated_content = response["content"]
+            print(f"✅ Received {len(generated_content)} chars of generated content")
+            
+            # Debug: show a preview of the generated content
+            preview = generated_content[:300].replace('\n', ' ')
+            print(f"📄 Content preview: {preview}...")
+            
+            directions = []
+            
+            # Extract each direction using regex
+            for i in range(1, count + 1):
+                direction = {}
+                
+                # Extract title
+                title_pattern = f"DIRECTION_{i}_TITLE:(.*?)(?:DIRECTION_{i}_QUESTION:|$)"
+                title_match = re.search(title_pattern, generated_content, re.DOTALL)
+                if title_match:
+                    direction["title"] = title_match.group(1).strip()
+                    print(f"✅ Found direction {i} title: {direction['title']}")
+                else:
+                    print(f"❓ Missing title for direction {i}")
+                
+                # Extract question (only if title was found)
+                if "title" in direction:
+                    question_pattern = f"DIRECTION_{i}_QUESTION:(.*?)(?:DIRECTION_{i}_RATIONALE:|$)"
+                    question_match = re.search(question_pattern, generated_content, re.DOTALL)
+                    if question_match:
+                        direction["question"] = question_match.group(1).strip()
+                    
+                    # Extract rationale
+                    rationale_pattern = f"DIRECTION_{i}_RATIONALE:(.*?)(?:DIRECTION_{i}_METHODOLOGY:|$)"
+                    rationale_match = re.search(rationale_pattern, generated_content, re.DOTALL)
+                    if rationale_match:
+                        direction["rationale"] = rationale_match.group(1).strip()
+                    
+                    # Extract methodology
+                    methodology_pattern = f"DIRECTION_{i}_METHODOLOGY:(.*?)(?:DIRECTION_{i}_GAPS:|DIRECTION_{i+1}_TITLE:|$)"
+                    methodology_match = re.search(methodology_pattern, generated_content, re.DOTALL)
+                    if methodology_match:
+                        direction["methodology"] = methodology_match.group(1).strip()
+                    
+                    # Extract gaps
+                    gaps_pattern = f"DIRECTION_{i}_GAPS:(.*?)(?:DIRECTION_{i+1}_TITLE:|$)"
+                    gaps_match = re.search(gaps_pattern, generated_content, re.DOTALL)
+                    if gaps_match:
+                        direction["gaps"] = gaps_match.group(1).strip()
+                
+                # Add to directions if we have at least a title and question
+                if direction.get("title") and direction.get("question"):
+                    directions.append(direction)
+            
+            print(f"💡 Successfully extracted {len(directions)} research directions")
+            
+            # If no directions were found with regex, use a fallback approach
+            if not directions:
+                print("⚠️ No directions found with regex, trying fallback parsing...")
+                lines = generated_content.split("\n")
+                current_direction = {}
+                current_field = None
+                
+                for line in lines:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    
+                    # Check for a new direction title
+                    if line.startswith("DIRECTION") and "TITLE:" in line:
+                        # Save previous direction if it exists
+                        if current_direction.get("title") and current_direction.get("question"):
+                            directions.append(current_direction)
+                            print(f"✅ Added direction from fallback: {current_direction['title']}")
+                        
+                        current_direction = {}
+                        parts = line.split("TITLE:", 1)
+                        if len(parts) > 1:
+                            current_direction["title"] = parts[1].strip()
+                            current_field = "title"
+                    
+                    # Check for other fields
+                    elif "QUESTION:" in line:
+                        parts = line.split("QUESTION:", 1)
+                        if len(parts) > 1:
+                            current_direction["question"] = parts[1].strip()
+                            current_field = "question"
+                    elif "RATIONALE:" in line:
+                        parts = line.split("RATIONALE:", 1)
+                        if len(parts) > 1:
+                            current_direction["rationale"] = parts[1].strip()
+                            current_field = "rationale"
+                    elif "METHODOLOGY:" in line:
+                        parts = line.split("METHODOLOGY:", 1)
+                        if len(parts) > 1:
+                            current_direction["methodology"] = parts[1].strip()
+                            current_field = "methodology"
+                    elif "GAPS:" in line:
+                        parts = line.split("GAPS:", 1)
+                        if len(parts) > 1:
+                            current_direction["gaps"] = parts[1].strip()
+                            current_field = "gaps"
+                    # Append to current field if continuing
+                    elif current_field and current_field in current_direction:
+                        current_direction[current_field] += " " + line
+                
+                # Add the last direction if it exists
+                if current_direction.get("title") and current_direction.get("question"):
+                    directions.append(current_direction)
+                    print(f"✅ Added final direction from fallback: {current_direction['title']}")
+            
+            print(f"💡 Final count: {len(directions)} research directions")
+            
+            return {
+                "success": len(directions) > 0,
+                "directions": directions,
+                "count": len(directions),
+                "input_tokens": response.get("input_tokens", 0),
+                "output_tokens": response.get("output_tokens", 0)
+            }
+        except Exception as e:
+            error_message = f"Error generating research directions: {str(e)}"
+            print(f"❌ {error_message}")
+            import traceback
+            traceback.print_exc()
+            return {
+                "success": False,
+                "error": error_message,
+                "directions": []
+            }
+
+
+class RecommendationSynthesizer:
+    """Synthesizes final research recommendations and next steps"""
+    
+    def __init__(self, llm_provider: MistralProvider):
+        self.llm_provider = llm_provider
+        
+    def _build_full_synthesis_prompt(self, query: str, lit_review: str, comparison: str) -> str:
+        """Build synthesis prompt when we have both literature review and direction reviews"""
+        return f"""
+        Based on the following research information, provide clear research recommendations and next steps:
+        
+        ORIGINAL QUERY: {query}
+        
+        LITERATURE REVIEW SUMMARY:
+        {lit_review[:1500]}
+        
+        DIRECTION COMPARISON:
+        {comparison[:1000]}
+        
+        REQUIRED OUTPUT FORMAT - YOU MUST USE THESE EXACT SECTION HEADERS WITH COLONS:
+
+        RECOMMENDATIONS: [Provide 2-3 synthesized research recommendations based on the literature and comparisons. Be specific and actionable.]
+        
+        NEXT_STEPS: [List 3-5 clear, numbered steps the researcher should take, ordered by priority. Format as "1. First step", "2. Second step", etc.]
+        
+        TIMELINE: [Suggest a realistic timeline for implementing these steps.]
+        
+        POTENTIAL_CHALLENGES: [Note 2-3 challenges the researcher might face and brief suggestions to overcome them.]
+        
+        Do not include any other sections, and make sure to use the exact section headers as shown above (all caps followed by colon).
+        """
+    
+    def _build_directions_only_prompt(self, query: str, lit_review: str, directions: List[Dict[str, str]]) -> str:
+        """Build synthesis prompt when we have literature review and directions but no reviews"""
+        directions_text = "\n\n".join([
+            f"DIRECTION {i+1}: {direction.get('title', 'Untitled')}\n{direction.get('question', 'No question provided')}"
+            for i, direction in enumerate(directions[:3])
+        ])
+        
+        return f"""
+        Based on the following research information, provide clear research recommendations and next steps:
+        
+        ORIGINAL QUERY: {query}
+        
+        LITERATURE REVIEW SUMMARY:
+        {lit_review[:1500]}
+        
+        POTENTIAL RESEARCH DIRECTIONS:
+        {directions_text}
+        
+        REQUIRED OUTPUT FORMAT - YOU MUST USE THESE EXACT SECTION HEADERS WITH COLONS:
+
+        RECOMMENDATIONS: [Provide 2-3 synthesized research recommendations based on the literature and potential directions. Be specific and actionable.]
+        
+        NEXT_STEPS: [List 3-5 clear, numbered steps the researcher should take, ordered by priority. Format as "1. First step", "2. Second step", etc.]
+        
+        TIMELINE: [Suggest a realistic timeline for implementing these steps.]
+        
+        POTENTIAL_CHALLENGES: [Note 2-3 challenges the researcher might face and brief suggestions to overcome them.]
+        
+        Do not include any other sections, and make sure to use the exact section headers as shown above (all caps followed by colon).
+        """
+    
+    def _build_literature_only_prompt(self, query: str, lit_review: str) -> str:
+        """Build synthesis prompt when we only have literature review"""
+        return f"""
+        Based on the following literature review, provide research recommendations and next steps:
+        
+        ORIGINAL QUERY: {query}
+        
+        LITERATURE REVIEW:
+        {lit_review}
+        
+        REQUIRED OUTPUT FORMAT - YOU MUST USE THESE EXACT SECTION HEADERS WITH COLONS:
+
+        RECOMMENDATIONS: [Provide 2-3 promising research directions based solely on the literature review. For each, explain the rationale and how it addresses gaps in existing research.]
+        
+        NEXT_STEPS: [List 3-5 clear, numbered steps the researcher should take, ordered by priority. Format as "1. First step", "2. Second step", etc.]
+        
+        TIMELINE: [Suggest a realistic timeline for implementing these steps.]
+        
+        POTENTIAL_CHALLENGES: [Note 2-3 challenges the researcher might face and brief suggestions to overcome them.]
+        
+        Do not include any other sections, and make sure to use the exact section headers as shown above (all caps followed by colon).
+        """
+    
+    async def synthesize_recommendations(self, query: str, search_results: Dict[str, Any], 
+                                         directions_result: Dict[str, Any], 
+                                         reviews_result: Dict[str, Any]) -> Dict[str, Any]:
+        """Generate synthesized recommendations and next steps"""
+        print("🔄 Synthesizing final recommendations...")
+        
+        try:
+            # Check if we have valid inputs
+            if not search_results.get("success", False):
+                print("❌ Cannot synthesize recommendations: Search was not successful")
+                return {
+                    "success": False,
+                    "error": "Cannot synthesize recommendations without successful literature search",
+                    "recommendations": "No recommendations available due to search failure.",
+                    "next_steps": []
+                }
+            
+            # Extract the necessary information from inputs
+            lit_review = search_results.get("results", "")[:2000]  # Limit to avoid token overflow
+            
+            # Build different prompts based on available data
+            if reviews_result.get("success", False) and reviews_result.get("comparison", ""):
+                # We have both directions and reviews
+                comparison = reviews_result.get("comparison", "")
+                prompt = self._build_full_synthesis_prompt(query, lit_review, comparison)
+            elif directions_result.get("success", False) and directions_result.get("directions", []):
+                # We have directions but no reviews
+                directions = directions_result.get("directions", [])
+                prompt = self._build_directions_only_prompt(query, lit_review, directions)
+            else:
+                # We only have literature review
+                prompt = self._build_literature_only_prompt(query, lit_review)
+            
+            # Get synthesis from LLM with stronger formatting instructions
+            response = await self.llm_provider.generate_completion_sync(
+                [
+                    {"role": "system", "content": """You are a research advisor who synthesizes research findings and provides actionable recommendations.
+
+You MUST follow the output format instructions precisely. Your response should ALWAYS include the exact section headers requested (RECOMMENDATIONS:, NEXT_STEPS:, etc.) with no variations. 
+
+Format next steps as numbered lists (1., 2., etc.) and ensure each section has substantive content."""},
+                    {"role": "user", "content": prompt}
+                ]
+            )
+            
+            # Process the response
+            content = response["content"]
+            
+            # Add logging to debug empty response
+            print(f"📄 Synthesis response length: {len(content)} chars")
+            if len(content) < 50:
+                print(f"⚠️ Very short synthesis response: '{content}'")
+                # Return error status for empty response
+                return {
+                    "success": False,
+                    "error": "Synthesis generated empty or too short response",
+                    "recommendations": "Could not generate detailed recommendations. Please try refining your query.",
+                    "next_steps": [{"number": "1", "description": "Try a more specific research query"}]
+                }
+            
+            # Extract next steps section
+            next_steps_section = self._extract_section(content, "NEXT_STEPS")
+            next_steps = self._parse_steps(next_steps_section)
+            
+            # Extract recommendations section
+            recommendations = self._extract_section(content, "RECOMMENDATIONS")
+            
+            # Ensure recommendations are not empty
+            if not recommendations or len(recommendations.strip()) < 20:
+                print("⚠️ Empty recommendations extracted from non-empty synthesis")
+                # Extract any section that might have content
+                for section_name in ["SYNTHESIS", "SUMMARY", "OVERVIEW", "ANALYSIS", "RESULTS"]:
+                    alt_section = self._extract_section(content, section_name)
+                    if alt_section and len(alt_section.strip()) >= 20:
+                        recommendations = alt_section
+                        break
+                
+                # If still empty, use the first 500 chars of the response
+                if not recommendations or len(recommendations.strip()) < 20:
+                    recommendations = content[:500] + "..."
+            
+            # Ensure next_steps are not empty
+            if not next_steps:
+                print("⚠️ Empty next steps extracted from non-empty synthesis")
+                next_steps = [
+                    {"number": "1", "description": "Conduct a more focused literature review on the specific aspects identified above"}, 
+                    {"number": "2", "description": "Consider reaching out to experts in the field for additional insights"}
+                ]
+            
+            print(f"✅ Successfully synthesized recommendations ({len(recommendations)} chars) and {len(next_steps)} next steps")
+            
+            return {
+                "success": True,
+                "recommendations": recommendations,
+                "next_steps": next_steps,
+                "full_synthesis": content
+            }
+            
+        except Exception as e:
+            error_message = f"Error synthesizing recommendations: {str(e)}"
+            print(f"❌ {error_message}")
+            import traceback
+            traceback.print_exc()
+            
+            # Return a fallback response instead of empty content
+            return {
+                "success": False,
+                "error": error_message,
+                "recommendations": "Could not generate recommendations due to an error. Please try again with a different query.",
+                "next_steps": [{"number": "1", "description": "Try a more specific research query"}]
+            }
+    
+    def _extract_section(self, content: str, section_name: str) -> str:
+        """Extract a specific section from the structured content with better handling of variations"""
+        # Try exact format first (SECTION_NAME:)
+        pattern = f"{section_name}:(.*?)(?:(?:[A-Z_]+:)|$)"
+        match = re.search(pattern, content, re.DOTALL)
+        if match:
+            return match.group(1).strip()
+        
+        # Try variations with flexible capitalization and optional underscore/space
+        # This will match "Next Steps:", "NEXT STEPS:", "next_steps:", etc.
+        section_pattern = section_name.replace('_', '[_ ]?')
+        pattern = f"(?i){section_pattern}:(.*?)(?:(?:[A-Za-z _]+:)|$)"
+        match = re.search(pattern, content, re.DOTALL)
+        if match:
+            return match.group(1).strip()
+        
+        # Try looking for section with ## or other markdown headers
+        pattern = f"(?i)(?:##\\s*|\\*\\*\\s*){section_pattern.replace('_', '[_ ]?')}(?:\\s*:|\\s*\\*\\*)?\\s*(.*?)(?:(?:##|\\*\\*)[A-Za-z _]+|$)"
+        match = re.search(pattern, content, re.DOTALL)
+        if match:
+            return match.group(1).strip()
+        
+        # If all else fails, return empty string
+        return ""
+    
+    def _parse_steps(self, steps_text: str) -> List[Dict[str, str]]:
+        """Parse the next steps text into a structured list with better resilience"""
+        steps = []
+        
+        if not steps_text or len(steps_text.strip()) < 10:
+            # Return default steps if text is too short
+            return [
+                {"number": "1", "description": "Review the literature findings and select a specific focus area"},
+                {"number": "2", "description": "Develop a detailed research plan based on the recommendations"}
+            ]
+        
+        # Look for numbered steps (1., 2., etc.)
+        step_matches = re.findall(r'(\d+[\.\)\-])\s+(.*?)(?=\n\s*\d+[\.\)\-]|\n\n|$)', steps_text, re.DOTALL)
+        
+        if step_matches:
+            for match in step_matches:
+                number, text = match
+                steps.append({
+                    "number": number.strip('.)-'),
+                    "description": text.strip()
+                })
+        else:
+            # Alternative parsing for bullet points or other formats
+            lines = steps_text.split('\n')
+            current_step = None
+            step_number = 1
+            
+            for i, line in enumerate(lines):
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                
+                # Check if this looks like a new step
+                if stripped.startswith('•') or stripped.startswith('-') or stripped.startswith('*') or (len(stripped) > 2 and stripped[0].isdigit() and stripped[1] in ['.', ')', ':', '-']):
+                    if current_step:
+                        steps.append(current_step)
+                    current_step = {
+                        "number": str(step_number),
+                        "description": stripped.lstrip('•-*123456789.) :')
+                    }
+                    step_number += 1
+                elif current_step:
+                    # Continue previous step
+                    current_step["description"] += " " + stripped
+        
+            # Add the last step if exists
+            if current_step:
+                steps.append(current_step)
+        
+        # If no steps were found but we have content, break it into artificial steps
+        if not steps and steps_text:
+            # Split by sentences or paragraphs
+            parts = re.split(r'(?<=[.!?])\s+', steps_text)
+            for i, part in enumerate(parts[:3]):  # Limit to 3 steps
+                if len(part.strip()) > 10:  # Only add if meaningful content
+                    steps.append({
+                        "number": str(i+1),
+                        "description": part.strip()
+                    })
+        
+        # If still empty, add a default step
+        if not steps:
+            steps.append({
+                "number": "1",
+                "description": "Review the literature and synthesize key findings into a research plan"
+            })
+        
+        return steps
 
 
 class MistralAgent:
@@ -294,6 +1033,9 @@ class MistralAgent:
         self.synthesis_generator = SynthesisGenerator(self.llm_provider)
         self.research_framer = ResearchFramer(self.llm_provider)
         self.search_provider = PerplexitySearchProvider()
+        self.directions_generator = ResearchDirectionsGenerator(self.llm_provider)
+        self.direction_reviewer = DirectionReviewer(self.llm_provider)
+        self.recommendation_synthesizer = RecommendationSynthesizer(self.llm_provider)
 
     async def process_task(self, task: Dict[str, str]) -> Dict[str, Any]:
         """Process a single task"""
@@ -334,138 +1076,258 @@ class MistralAgent:
         Returns:
             Dictionary with search results and metadata
         """
-        # Step 1: Frame the query as a research direction
-        framed = await self.research_framer.frame_as_research_direction(query)
-        
-        # Step 2: Perform literature search
-        search_results = await self.search_provider.search(framed["research_direction"])
-        
-        return {
-            "original_query": query,
-            "framed_direction": framed["research_direction"],
-            "search_results": search_results,
-            "success": search_results.get("success", False)
-        }
+        try:
+            # Step 1: Frame the query as a research direction
+            print("📚 Step 1: Framing research direction...")
+            framed = await self.research_framer.frame_as_research_direction(query)
+            framed_direction = framed["research_direction"]
+            print(f"🎯 Framed Direction: {framed_direction}")
+            
+            # Step 2: Perform literature search
+            print("🔍 Step 2: Conducting literature search...")
+            search_results = await self.search_provider.search(framed_direction)
+            
+            if search_results.get("success", False):
+                print("📖 Literature search successful")
+                # Log a bit of the search results for debugging
+                print(f"📄 Search results preview: {search_results.get('results', '')[:200]}...")
+                
+                # Step 3: Generate potential research directions
+                print("🧠 Step 3: Generating potential research directions...")
+                directions_result = await self.directions_generator.generate_directions(search_results)
+                print(f"💡 Generated {directions_result.get('count', 0)} research directions")
+                
+                # Step 4: Review research directions
+                reviews_result = {}
+                if directions_result.get("success", False) and directions_result.get("count", 0) > 0:
+                    print("⚖️ Step 4: Evaluating research directions...")
+                    reviews_result = await self.direction_reviewer.compare_directions(
+                        directions_result["directions"], 
+                        search_results["results"]
+                    )
+                    print("✅ Direction evaluations completed")
+                else:
+                    print("⚠️ Skipping direction evaluation - no valid directions generated")
+                
+                # Step 5: Synthesize final recommendations
+                print("🧠 Step 5: Synthesizing final recommendations...")
+                synthesis_result = await self.recommendation_synthesizer.synthesize_recommendations(
+                    query,
+                    search_results,
+                    directions_result,
+                    reviews_result
+                )
+                print("✅ Recommendation synthesis completed")
+                
+                return {
+                    "original_query": query,
+                    "framed_direction": framed_direction,
+                    "search_results": search_results,
+                    "directions_result": directions_result,
+                    "reviews_result": reviews_result,
+                    "synthesis_result": synthesis_result,
+                    "success": True
+                }
+            else:
+                print(f"❌ Literature search failed: {search_results.get('error', 'Unknown error')}")
+                return {
+                    "original_query": query,
+                    "framed_direction": framed_direction,
+                    "search_results": search_results,
+                    "success": False
+                }
+        except Exception as e:
+            error_message = f"Error in research query processing: {str(e)}"
+            print(f"❌ {error_message}")
+            import traceback
+            traceback.print_exc()
+            return {
+                "original_query": query,
+                "success": False,
+                "error": error_message
+            }
 
     async def run(self, message: discord.Message):
         try:
             query = message.content
             print(f"🤖 Starting to process query: {query}")
             
-            print("🔍 Attempting research-focused processing pipeline...")
+            # Check if this is a refinement of a previous query
+            is_refinement = False
+            original_query = query
             
-            # Process as research query
-            print("📚 Step 1: Framing research direction...")
-            results = await self.process_research_query(query)
+            # Check if message starts with "refine:" or similar refinement indicators
+            refinement_prefixes = ["refine:", "iterate:", "narrow:", "focus:"]
+            for prefix in refinement_prefixes:
+                if query.lower().startswith(prefix):
+                    is_refinement = True
+                    query = query[len(prefix):].strip()
+                    print(f"📌 Detected refinement request: {query}")
+                    break
             
-            if results["success"]:
-                print("✅ Research pipeline successful!")
-                print(f"🎯 Framed Direction: {results['framed_direction']}...")
-                print("📖 Literature review completed")
+            # Message the user that processing has started
+            status_text = "🧠 Starting research process..."
+            if is_refinement:
+                status_text = "🔍 Starting to refine your research direction..."
+            
+            status_message = await message.channel.send(status_text)
+            
+            try:
+                # Step 1: Frame the query as a research direction
+                await status_message.edit(content=f"📚 **Step 1/5:** Framing your query as a research direction...\n\n*Original query:* {query}")
+                print("📚 Step 1: Framing research direction...")
+                framed = await self.research_framer.frame_as_research_direction(query)
+                framed_direction = framed["research_direction"]
+                print(f"🎯 Framed Direction: {framed_direction}")
                 
-                if results.get("directions_result", {}).get("success", False):
-                    print(f"🌟 Generated {results['directions_result'].get('count', 0)} potential research directions")
+                # Update status message with framed direction
+                await status_message.edit(content=f"📚 **Step 1/5:** Query framed as research direction ✅\n\n*Research direction:* **{framed_direction}**\n\n🔍 **Step 2/5:** Searching scientific literature...")
                 
-                # Format the response
-                response = f"**Research Direction:**\n{results['framed_direction']}\n\n"
-                response += f"**Literature Review:**\n{results['search_results']['results']}\n\n"
+                # Step 2: Perform literature search
+                print("🔍 Step 2: Conducting literature search...")
+                search_results = await self.search_provider.search(framed_direction)
                 
-                # Add potential research directions if available
-                if results.get("directions_result", {}).get("success", False) and results["directions_result"].get("count", 0) > 0:
-                    print("📝 Adding research directions to response...")
-                    response += f"**Potential Research Directions:**\n\n"
+                if not search_results.get("success", False):
+                    # Literature search failed
+                    error_msg = search_results.get("error", "Unknown error in literature search")
+                    print(f"❌ Literature search failed: {error_msg}")
                     
-                    for i, direction in enumerate(results["directions_result"]["directions"]):
-                        response += f"**{i+1}. {direction.get('title', 'Research Direction')}**\n"
-                        response += f"*Question:* {direction.get('question', 'Not specified')}\n"
-                        response += f"*Rationale:* {direction.get('rationale', 'Not specified')}\n"
-                        
-                        if len(response) < 1600 and direction.get("methodology"):
-                            response += f"*Methodology:* {direction.get('methodology')}\n"
-                        
-                        if len(response) < 1800 and direction.get("gaps"):
-                            response += f"*Gaps Addressed:* {direction.get('gaps')}\n"
-                        
-                        response += "\n"
-                
-                # Add citations if available
-                if results['search_results'].get('citations') and len(response) < 1800:
-                    print("📚 Adding citations to response...")
-                    response += "**Sources:**\n"
-                    for i, citation in enumerate(results['search_results']['citations'][:3]):
-                        response += f"{i+1}. {citation}\n"
-                
-                # Ensure response fits in Discord's message limit
-                if len(response) > 2000:
-                    print("⚠️ Response too long, truncating...")
-                    response = response[:1997] + "..."
+                    await status_message.edit(content=f"📚 **Step 1/5:** Query framed as research direction ✅\n\n*Research direction:* **{framed_direction}**\n\n🔍 **Step 2/5:** ❌ Literature search failed\n\n*Error:* {error_msg[:200]}...\n\n⚠️ Generating a general response instead...")
                     
-                print("✨ Research response ready!")
-                return response
-            else:
-                print(f"⚠️ Literature search failed: {results['search_results'].get('error')}")
-                print("↪️ Falling back to standard processing...")
-                
-                # For simple queries, skip decomposition
-                if len(query.split()) < 15:
-                    print("📝 Query is simple, processing directly...")
-                    messages = [
-                        {"role": "system", "content": SYSTEM_PROMPT + " Keep your response under 2000 characters to fit in a Discord message."},
-                        {"role": "user", "content": query},
-                    ]
-                    response = await self.llm_provider.generate_completion_sync(messages, max_tokens=1024)
+                    # Generate a fallback response
+                    response = f"I've framed your query as: **{framed_direction}**\n\nHowever, I wasn't able to complete the literature search due to an error: {error_msg}\n\n"
+                    response += "You might want to try:\n"
+                    response += "1. Rephrasing your query to be more specific\n"
+                    response += "2. Breaking your question into smaller, focused parts\n"
+                    response += "3. Checking if your topic has sufficient published research"
                     
-                    content = response["content"]
-                    if len(content) > 2000:
-                        print("⚠️ Direct response too long, truncating...")
-                        content = content[:1997] + "..."
-                        
-                    print("✅ Simple response ready!")
-                    return content
+                    # Delete status message and return response
+                    await status_message.delete()
+                    return response
                 
-                # Complex query processing
-                print("🔄 Decomposing complex query into tasks...")
-                decomposition = await self.task_decomposer.decompose_query(query)
+                # Rest of the research pipeline (for successful search)
+                print("📖 Literature search successful")
+                await status_message.edit(content=f"📚 **Step 1/5:** Query framed as research direction ✅\n\n*Research direction:* **{framed_direction}**\n\n🔍 **Step 2/5:** Literature search complete ✅\n\n💡 **Step 3/5:** Generating research directions...")
                 
-                if len(decomposition["tasks"]) == 1 and decomposition["tasks"][0]["subject"] == "Default":
-                    print("⚠️ Decomposition unnecessary, processing directly...")
-                    messages = [
-                        {"role": "system", "content": SYSTEM_PROMPT + " Keep your response under 2000 characters to fit in a Discord message."},
-                        {"role": "user", "content": query},
-                    ]
-                    response = await self.llm_provider.generate_completion_sync(messages, max_tokens=1024)
-                    
-                    content = response["content"]
-                    if len(content) > 2000:
-                        print("⚠️ Fallback response too long, truncating...")
-                        content = content[:1997] + "..."
-                    
-                    print("✅ Direct response ready!")
-                    return content
+                # Step 3: Generate potential research directions
+                print("🧠 Step 3: Generating potential research directions...")
+                directions_result = await self.directions_generator.generate_directions(search_results)
+                print(f"💡 Generated {directions_result.get('count', 0)} research directions")
                 
-                print(f"⚡ Processing {len(decomposition['tasks'])} tasks in parallel...")
-                tasks = decomposition["tasks"]
-                for i, task in enumerate(tasks):
-                    print(f"📋 Task {i+1}: {task['subject']}")
+                await status_message.edit(content=f"📚 **Step 1/5:** Query framed as research direction ✅\n\n*Research direction:* **{framed_direction}**\n\n🔍 **Step 2/5:** Literature search complete ✅\n\n💡 **Step 3/5:** Generated {directions_result.get('count', 0)} research directions ✅\n\n⚖️ **Step 4/5:** Evaluating research directions...")
                 
-                task_results = await asyncio.gather(
-                    *[self.process_task(task) for task in tasks]
+                # Step 4: Review research directions
+                reviews_result = {}
+                if directions_result.get("success", False) and directions_result.get("count", 0) > 0:
+                    print("⚖️ Step 4: Evaluating research directions...")
+                    reviews_result = await self.direction_reviewer.compare_directions(
+                        directions_result["directions"], 
+                        search_results["results"]
+                    )
+                    print("✅ Direction evaluations completed")
+                else:
+                    print("⚠️ Skipping direction evaluation - no valid directions generated")
+                
+                await status_message.edit(content=f"📚 **Step 1/5:** Query framed as research direction ✅\n\n*Research direction:* **{framed_direction}**\n\n🔍 **Step 2/5:** Literature search complete ✅\n\n💡 **Step 3/5:** Generated {directions_result.get('count', 0)} research directions ✅\n\n⚖️ **Step 4/5:** Research directions evaluated ✅\n\n🧠 **Step 5/5:** Synthesizing final recommendations...")
+                
+                # Step 5: Synthesize final recommendations
+                print("🧠 Step 5: Synthesizing final recommendations...")
+                synthesis_result = await self.recommendation_synthesizer.synthesize_recommendations(
+                    query,
+                    search_results,
+                    directions_result,
+                    reviews_result
                 )
+                print("✅ Recommendation synthesis completed")
                 
-                print("🔄 Synthesizing results...")
-                synthesis = await self.synthesis_generator.generate_synthesis(query, task_results)
+                # Create the final response
+                response = f"## Research on: {framed_direction}\n\n"
                 
-                content = synthesis["content"]
+                if synthesis_result.get("success", False):
+                    response += f"### Recommendations\n{synthesis_result.get('recommendations', 'No specific recommendations available.')}\n\n"
+                    
+                    # Add next steps
+                    if synthesis_result.get("next_steps", []):
+                        response += "### Next Steps\n"
+                        for step in synthesis_result.get("next_steps", []):
+                            response += f"{step.get('number', '•')}. {step.get('description', '')}\n"
+                        response += "\n"
+                else:
+                    # Fallback if synthesis failed
+                    response += f"I was able to find information on your query, but had trouble synthesizing recommendations.\n\n"
+                    response += f"Here's a summary of what I found:\n\n"
+                    
+                    # Include a preview of search results
+                    results_preview = search_results.get("results", "")[:500] + "..." if len(search_results.get("results", "")) > 500 else search_results.get("results", "")
+                    response += f"{results_preview}\n\n"
+                    
+                    # Add basic next steps
+                    response += "### Suggested Next Steps\n"
+                    response += "1. Review the literature summary above\n"
+                    response += "2. Consider narrowing your research focus\n"
+                    response += "3. Try a follow-up query with 'refine:' prefix\n"
                 
-                if len(content) > 2000:
-                    print("⚠️ Synthesized response too long, truncating...")
-                    content = content[:1997] + "..."
+                # Delete status message
+                await status_message.delete()
+
+                # Check if response exceeds Discord's character limit
+                if len(response) <= 2000:
+                    return response
+                else:
+                    # Split response into chunks of 2000 characters or less
+                    # We'll return the first chunk and send the rest as follow-up messages
+                    chunks = []
+                    current_chunk = ""
+                    
+                    # Try to split at paragraph breaks to make the chunks more readable
+                    paragraphs = response.split("\n\n")
+                    for paragraph in paragraphs:
+                        if len(current_chunk) + len(paragraph) + 2 <= 2000:  # +2 for the "\n\n"
+                            if current_chunk:
+                                current_chunk += "\n\n"
+                            current_chunk += paragraph
+                        else:
+                            # If adding this paragraph would exceed the limit
+                            if current_chunk:
+                                chunks.append(current_chunk)
+                                current_chunk = paragraph
+                            else:
+                                # If a single paragraph is too long, split it by characters
+                                if len(paragraph) > 2000:
+                                    for i in range(0, len(paragraph), 1900):
+                                        chunks.append(paragraph[i:i+1900])
+                                else:
+                                    chunks.append(paragraph)
+                    
+                    if current_chunk:
+                        chunks.append(current_chunk)
+                    
+                    # Send follow-up chunks to the channel
+                    if len(chunks) > 1:
+                        for i in range(1, len(chunks)):
+                            await message.channel.send(chunks[i])
+                            
+                    # Return the first chunk to be sent as the reply
+                    return chunks[0]
                 
-                print("✨ Final response ready!")
-                return content
+            except Exception as e:
+                # Handle errors in the research pipeline
+                error_message = f"An error occurred during the research process: {str(e)}"
+                print(f"❌ Error in research pipeline: {str(e)}")
+                import traceback
+                traceback.print_exc()
+                
+                await status_message.edit(content=f"❌ **Research Error**\n\nAn error occurred while processing your request: {str(e)[:200]}...\n\nPlease try again with a different query.")
+                
+                response = f"I encountered an error while researching your query: {str(e)}\n\nPlease try again with a different formulation."
+                
+                # Delete status message and return response
+                await status_message.delete()
+                return response
+            
         except Exception as e:
             error_message = f"An error occurred while processing your request: {str(e)}"
             print(f"❌ Error in run method: {str(e)}")
             import traceback
             traceback.print_exc()
-            return error_message
+            return error_message  # Important: Return the error message to avoid empty response
