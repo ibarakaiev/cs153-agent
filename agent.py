@@ -502,22 +502,6 @@ Provide concrete, specific assessments backed by the literature context."""},
             "count": len(reviews)
         }
     
-    def _format_reviews_summary(self, reviews: List[Dict[str, str]]) -> str:
-        """Format reviews into a concise summary for comparison"""
-        if not reviews:
-            return "No reviews available."
-            
-        summary = ""
-        for i, review in enumerate(reviews):
-            title = review.get("title", f"Direction {i+1}")
-            summary += f"DIRECTION {i+1}: {title}\n"
-            summary += f"QUESTION: {review.get('question', 'Not specified')}\n"
-            summary += f"FEASIBILITY: {review.get('feasibility', 'Not evaluated')[:150]}...\n"
-            summary += f"IMPACT: {review.get('impact', 'Not evaluated')[:150]}...\n"
-            summary += f"PRIORITY: {review.get('priority', 'Not specified')}\n\n"
-            
-        return summary
-    
     async def _generate_comparison(self, directions: List[Dict[str, str]], reviews: List[Dict[str, str]]) -> str:
         """Generate a strategic comparison of research directions"""
         
@@ -588,6 +572,32 @@ Keep response under 2000 chars. Be specific and actionable."""
         
         # If all else fails, return empty string
         return ""
+
+    def _format_reviews_summary(self, reviews: List[Dict[str, str]]) -> str:
+        """Format reviews into a concise summary for comparison"""
+        summary = ""
+        
+        for i, review in enumerate(reviews):
+            title = review.get("title", f"Direction {i+1}")
+            question = review.get("question", "No question provided")
+            priority = review.get("priority", "No priority assessment")
+            
+            summary += f"DIRECTION {i+1}: {title}\n"
+            summary += f"QUESTION: {question}\n"
+            summary += f"PRIORITY: {priority}\n"
+            
+            # Add key metrics if available
+            for key in ["feasibility", "novelty", "impact"]:
+                if key in review and review[key]:
+                    # Truncate long values
+                    value = review[key]
+                    if len(value) > 100:
+                        value = value[:97] + "..."
+                    summary += f"{key.upper()}: {value}\n"
+            
+            summary += "\n"
+            
+        return summary
 
 
 class ResearchDirectionsGenerator:
@@ -1098,31 +1108,6 @@ class MistralAgent:
         self.direction_reviewer = DirectionReviewer(self.llm_provider)
         self.recommendation_synthesizer = RecommendationSynthesizer(self.llm_provider)
 
-    def _extract_section(self, content: str, section_name: str) -> str:
-        """Extract a specific section from the structured content with better handling of variations"""
-        # Try exact format first (SECTION_NAME:)
-        pattern = f"{section_name}:(.*?)(?:(?:[A-Z_]+:)|$)"
-        match = re.search(pattern, content, re.DOTALL)
-        if match:
-            return match.group(1).strip()
-        
-        # Try variations with flexible capitalization and optional underscore/space
-        # This will match "Next Steps:", "NEXT STEPS:", "next_steps:", etc.
-        section_pattern = section_name.replace('_', '[_ ]?')
-        pattern = f"(?i){section_pattern}:(.*?)(?:(?:[A-Za-z _]+:)|$)"
-        match = re.search(pattern, content, re.DOTALL)
-        if match:
-            return match.group(1).strip()
-        
-        # Try looking for section with ## or other markdown headers
-        pattern = f"(?i)(?:##\\s*|\\*\\*\\s*){section_pattern.replace('_', '[_ ]?')}(?:\\s*:|\\s*\\*\\*)?\\s*(.*?)(?:(?:##|\\*\\*)[A-Za-z _]+|$)"
-        match = re.search(pattern, content, re.DOTALL)
-        if match:
-            return match.group(1).strip()
-        
-        # If all else fails, return empty string
-        return ""
-
     async def process_task(self, task: Dict[str, str]) -> Dict[str, Any]:
         """Process a single task"""
         try:
@@ -1192,6 +1177,14 @@ class MistralAgent:
                         search_results["results"]
                     )
                     print("✅ Direction evaluations completed")
+                    
+                    # Send a message with the evaluation summary
+                    if reviews_result.get("success", False) and reviews_result.get("comparison"):
+                        evaluation_summary = f"## Direction Evaluation Summary\n{reviews_result['comparison']}"
+                        # Check if summary exceeds Discord's character limit
+                        if len(evaluation_summary) > 2000:
+                            evaluation_summary = evaluation_summary[:1997] + "..."
+                        await message.channel.send(evaluation_summary)
                 else:
                     print("⚠️ Skipping direction evaluation - no valid directions generated")
                 
@@ -1311,6 +1304,14 @@ class MistralAgent:
                         search_results["results"]
                     )
                     print("✅ Direction evaluations completed")
+                    
+                    # Send a message with the evaluation summary
+                    if reviews_result.get("success", False) and reviews_result.get("comparison"):
+                        evaluation_summary = f"## Direction Evaluation Summary\n\n{reviews_result['comparison']}"
+                        # Check if summary exceeds Discord's character limit
+                        if len(evaluation_summary) > 2000:
+                            evaluation_summary = evaluation_summary[:1997] + "..."
+                        await message.channel.send(evaluation_summary)
                 else:
                     print("⚠️ Skipping direction evaluation - no valid directions generated")
                 
