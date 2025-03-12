@@ -1355,24 +1355,24 @@ class MistralAgent:
                 response = f"## Research on: {framed_direction}\n\n"
                 
                 if synthesis_result.get("success", False):
-                    response += f"### Recommendations\n{synthesis_result.get('recommendations', 'No specific recommendations available.')}\n\n"
+                    response += f"### Recommendations\n{synthesis_result.get('recommendations', 'No specific recommendations available.')}\n"
                     
-                    # Add next steps
-                    if synthesis_result.get("next_steps", []):
-                        response += "### Next Steps\n"
-                        for step in synthesis_result.get("next_steps", []):
-                            response += f"{step.get('number', '•')}. {step.get('description', '')}\n"
-                        response += "\n"
+                    # # Add next steps
+                    # if synthesis_result.get("next_steps", []):
+                    #     response += "### Next Steps\n"
+                    #     for step in synthesis_result.get("next_steps", []):
+                    #         response += f"{step.get('number', '•')}. {step.get('description', '')}\n"
+                    #     response += "\n"
                     
                     # Add citations if available
-                    citations = synthesis_result.get("citations", [])
-                    if citations:
-                        response += "### Recommended Reading\nThese sources provide additional context for your research:\n\n"
-                        for i, citation in enumerate(citations[:5]):  # Limit to 5 citations to avoid too long responses
-                            response += f"{i+1}. {citation}\n"
-                        response += "\n"
-                        if len(citations) > 5:
-                            response += f"*Plus {len(citations) - 5} more sources not shown here.*\n\n"
+                    # citations = synthesis_result.get("citations", [])
+                    # if citations:
+                    #     response += "### Recommended Reading\nThese sources provide additional context for your research:\n\n"
+                    #     for i, citation in enumerate(citations[:3]):  # Limit to 5 citations to avoid too long responses
+                    #         response += f"{i+1}. {citation}\n"
+                    #     response += "\n"
+                    #     if len(citations) > 5:
+                    #         response += f"*Plus {len(citations) - 5} more sources not shown here.*\n\n"
                 else:
                     # Fallback if synthesis failed
                     response += f"I was able to find information on your query, but had trouble synthesizing recommendations.\n\n"
