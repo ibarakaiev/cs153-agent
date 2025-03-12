@@ -1285,14 +1285,14 @@ class MistralAgent:
             
             try:
                 # Step 1: Frame the query as a research direction
-                await status_message.edit(content=f"The process can take a few minutes\n\n📚 **Step 1/5:** Framing your query as a research direction...\n\n*Original query:* {query}")
+                await status_message.edit(content=f"*The process can take a few minutes...*\n\n📚 **Step 1/5:** Framing your query as a research direction...\n\n*Original query:* {query}")
                 print("📚 Step 1: Framing research direction...")
                 framed = await self.research_framer.frame_as_research_direction(query)
                 framed_direction = framed["research_direction"]
                 print(f"🎯 Framed Direction: {framed_direction}")
                 
                 # Update status message with framed direction
-                await status_message.edit(content=f"The process can take a few minutes\n\n📚 **Step 1/5:** Query framed as research direction ✅\n\n*Research direction:* **{framed_direction}**\n\n🔍 **Step 2/5:** Searching scientific literature...")
+                await status_message.edit(content=f"*The process can take a few minutes...*\n\n📚 **Step 1/5:** Query framed as research direction ✅\n\n*Research direction:* **{framed_direction}**\n\n🔍 **Step 2/5:** Searching scientific literature...")
                 
                 # Step 2: Perform literature search
                 print("🔍 Step 2: Conducting literature search...")
@@ -1303,7 +1303,7 @@ class MistralAgent:
                     error_msg = search_results.get("error", "Unknown error in literature search")
                     print(f"❌ Literature search failed: {error_msg}")
                     
-                    await status_message.edit(content=f"The process can take a few minutes\n\n📚 **Step 1/5:** Query framed as research direction ✅\n\n*Research direction:* **{framed_direction}**\n\n🔍 **Step 2/5:** ❌ Literature search failed\n\n*Error:* {error_msg[:200]}...\n\n⚠️ Generating a general response instead...")
+                    await status_message.edit(content=f"*The process can take a few minutes...*\n\n📚 **Step 1/5:** Query framed as research direction ✅\n\n*Research direction:* **{framed_direction}**\n\n🔍 **Step 2/5:** ❌ Literature search failed\n\n*Error:* {error_msg[:200]}...\n\n⚠️ Generating a general response instead...")
                     
                     # Generate a fallback response
                     response = f"I've framed your query as: **{framed_direction}**\n\nHowever, I wasn't able to complete the literature search due to an error: {error_msg}\n\n"
@@ -1318,14 +1318,14 @@ class MistralAgent:
                 
                 # Rest of the research pipeline (for successful search)
                 print("📖 Literature search successful")
-                await status_message.edit(content=f"The process can take a few minutes\n\n📚 **Step 1/5:** Query framed as research direction ✅\n\n*Research direction:* **{framed_direction}**\n\n🔍 **Step 2/5:** Literature search complete ✅\n\n💡 **Step 3/5:** Generating research directions...")
+                await status_message.edit(content=f"*The process can take a few minutes...*\n\n📚 **Step 1/5:** Query framed as research direction ✅\n\n*Research direction:* **{framed_direction}**\n\n🔍 **Step 2/5:** Literature search complete ✅\n\n💡 **Step 3/5:** Generating research directions...")
                 
                 # Step 3: Generate potential research directions
                 print("🧠 Step 3: Generating potential research directions...")
                 directions_result = await self.directions_generator.generate_directions(search_results)
                 print(f"💡 Generated {directions_result.get('count', 0)} research directions")
                 
-                await status_message.edit(content=f"The process can take a few minutes\n\n📚 **Step 1/5:** Query framed as research direction ✅\n\n*Research direction:* **{framed_direction}**\n\n🔍 **Step 2/5:** Literature search complete ✅\n\n💡 **Step 3/5:** Generated {directions_result.get('count', 0)} research directions ✅\n\n⚖️ **Step 4/5:** Evaluating research directions in parallel...")
+                await status_message.edit(content=f"*The process can take a few minutes...*\n\n📚 **Step 1/5:** Query framed as research direction ✅\n\n*Research direction:* **{framed_direction}**\n\n🔍 **Step 2/5:** Literature search complete ✅\n\n💡 **Step 3/5:** Generated {directions_result.get('count', 0)} research directions ✅\n\n⚖️ **Step 4/5:** Evaluating research directions in parallel...")
                 
                 # Step 4: Review research directions
                 reviews_result = {}
@@ -1339,7 +1339,7 @@ class MistralAgent:
                 else:
                     print("⚠️ Skipping direction evaluation - no valid directions generated")
                 
-                await status_message.edit(content=f"The process can take a few minutes\n\n📚 **Step 1/5:** Query framed as research direction ✅\n\n*Research direction:* **{framed_direction}**\n\n🔍 **Step 2/5:** Literature search complete ✅\n\n💡 **Step 3/5:** Generated {directions_result.get('count', 0)} research directions ✅\n\n⚖️ **Step 4/5:** Research directions evaluated in parallel ✅\n\n🧠 **Step 5/5:** Synthesizing final recommendations...")
+                await status_message.edit(content=f"*The process can take a few minutes...*\n\n📚 **Step 1/5:** Query framed as research direction ✅\n\n*Research direction:* **{framed_direction}**\n\n🔍 **Step 2/5:** Literature search complete ✅\n\n💡 **Step 3/5:** Generated {directions_result.get('count', 0)} research directions ✅\n\n⚖️ **Step 4/5:** Research directions evaluated in parallel ✅\n\n🧠 **Step 5/5:** Synthesizing final recommendations...")
                 
                 # Step 5: Synthesize final recommendations
                 print("🧠 Step 5: Synthesizing final recommendations...")
