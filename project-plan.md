@@ -16,9 +16,9 @@
 
 - [ ] **Task 4: Generate Potential Research Directions**
 
-  - [ ] **Subtask 4.1**: Develop `generate_research_directions` Mistral function
-  - [ ] **Subtask 4.2**: Use parsed data to propose multiple hypotheses or directions
-  - [ ] **Subtask 4.3**: Ensure each direction is linked to relevant literature references
+  - [x] **Subtask 4.1**: Develop `generate_research_directions` Mistral function
+  - [x] **Subtask 4.2**: Use parsed data to propose multiple hypotheses or directions
+  - [x] **Subtask 4.3**: Ensure each direction is linked to relevant literature references
 
 - [ ] **Task 5: Conduct Parallel Review of Directions**
 
@@ -34,7 +34,7 @@
 
 - [ ] **Task 7: Build User-Facing Output**
 
-  - [ ] **Subtask 7.1**: Implement an interface (CLI, GUI, or API) for presenting research directions
+  - [ ] **Subtask 7.1**: Show intermediate thinking process by outputting messages for each major step the agent does to the discord user
   - [ ] **Subtask 7.2**: Ensure the output includes short rationales and reference links
   - [ ] **Subtask 7.3**: Add an option to refine or iterate on the research direction
 

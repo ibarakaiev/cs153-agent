@@ -350,97 +350,122 @@ class MistralAgent:
     async def run(self, message: discord.Message):
         try:
             query = message.content
-            print(f"Processing query: {query}")
+            print(f"🤖 Starting to process query: {query}")
             
-            print("Using online literature review pipeline")
+            print("🔍 Attempting research-focused processing pipeline...")
             
             # Process as research query
+            print("📚 Step 1: Framing research direction...")
             results = await self.process_research_query(query)
             
             if results["success"]:
+                print("✅ Research pipeline successful!")
+                print(f"🎯 Framed Direction: {results['framed_direction']}...")
+                print("📖 Literature review completed")
+                
+                if results.get("directions_result", {}).get("success", False):
+                    print(f"🌟 Generated {results['directions_result'].get('count', 0)} potential research directions")
+                
+                # Format the response
                 response = f"**Research Direction:**\n{results['framed_direction']}\n\n"
-                response += f"**Literature Review:**\n{results['search_results']['results']}"
+                response += f"**Literature Review:**\n{results['search_results']['results']}\n\n"
+                
+                # Add potential research directions if available
+                if results.get("directions_result", {}).get("success", False) and results["directions_result"].get("count", 0) > 0:
+                    print("📝 Adding research directions to response...")
+                    response += f"**Potential Research Directions:**\n\n"
+                    
+                    for i, direction in enumerate(results["directions_result"]["directions"]):
+                        response += f"**{i+1}. {direction.get('title', 'Research Direction')}**\n"
+                        response += f"*Question:* {direction.get('question', 'Not specified')}\n"
+                        response += f"*Rationale:* {direction.get('rationale', 'Not specified')}\n"
+                        
+                        if len(response) < 1600 and direction.get("methodology"):
+                            response += f"*Methodology:* {direction.get('methodology')}\n"
+                        
+                        if len(response) < 1800 and direction.get("gaps"):
+                            response += f"*Gaps Addressed:* {direction.get('gaps')}\n"
+                        
+                        response += "\n"
                 
                 # Add citations if available
-                if results['search_results'].get('citations'):
-                    response += "\n\n**Sources:**\n"
-                    for i, citation in enumerate(results['search_results']['citations'][:5]):
+                if results['search_results'].get('citations') and len(response) < 1800:
+                    print("📚 Adding citations to response...")
+                    response += "**Sources:**\n"
+                    for i, citation in enumerate(results['search_results']['citations'][:3]):
                         response += f"{i+1}. {citation}\n"
-                        
+                
                 # Ensure response fits in Discord's message limit
                 if len(response) > 2000:
+                    print("⚠️ Response too long, truncating...")
                     response = response[:1997] + "..."
                     
+                print("✨ Research response ready!")
                 return response
             else:
-                # Fall back to normal processing if literature search fails
-                print(f"Literature search failed: {results['search_results'].get('error')}")
-                pass  # Continue to standard processing below
-            
-            # The rest of the existing run method for non-research queries or fallback
-            # For simple queries, skip decomposition
-            if len(query.split()) < 15:
-                print("Query is simple, skipping decomposition")
-                messages = [
-                    {"role": "system", "content": SYSTEM_PROMPT + " Keep your response under 2000 characters to fit in a Discord message."},
-                    {"role": "user", "content": query},
-                ]
-                response = await self.llm_provider.generate_completion_sync(messages, max_tokens=1024)
+                print(f"⚠️ Literature search failed: {results['search_results'].get('error')}")
+                print("↪️ Falling back to standard processing...")
                 
-                content = response["content"]
-                # Check length
-                if len(content) > 2000:
-                    print(f"Warning: Direct response too long ({len(content)} chars). Truncating.")
-                    content = content[:1997] + "..."
+                # For simple queries, skip decomposition
+                if len(query.split()) < 15:
+                    print("📝 Query is simple, processing directly...")
+                    messages = [
+                        {"role": "system", "content": SYSTEM_PROMPT + " Keep your response under 2000 characters to fit in a Discord message."},
+                        {"role": "user", "content": query},
+                    ]
+                    response = await self.llm_provider.generate_completion_sync(messages, max_tokens=1024)
                     
-                return content
-            
-            # 1. Decompose the query into tasks
-            print("Decomposing query into tasks...")
-            decomposition = await self.task_decomposer.decompose_query(query)
-            
-            # If decomposition failed, process directly
-            if len(decomposition["tasks"]) == 1 and decomposition["tasks"][0]["subject"] == "Default":
-                print("Decomposition failed or unnecessary, processing directly")
-                messages = [
-                    {"role": "system", "content": SYSTEM_PROMPT + " Keep your response under 2000 characters to fit in a Discord message."},
-                    {"role": "user", "content": query},
-                ]
-                response = await self.llm_provider.generate_completion_sync(messages, max_tokens=1024)
+                    content = response["content"]
+                    if len(content) > 2000:
+                        print("⚠️ Direct response too long, truncating...")
+                        content = content[:1997] + "..."
+                        
+                    print("✅ Simple response ready!")
+                    return content
                 
-                content = response["content"]
-                # Check length
-                if len(content) > 2000:
-                    print(f"Warning: Fallback response too long ({len(content)} chars). Truncating.")
-                    content = content[:1997] + "..."
+                # Complex query processing
+                print("🔄 Decomposing complex query into tasks...")
+                decomposition = await self.task_decomposer.decompose_query(query)
+                
+                if len(decomposition["tasks"]) == 1 and decomposition["tasks"][0]["subject"] == "Default":
+                    print("⚠️ Decomposition unnecessary, processing directly...")
+                    messages = [
+                        {"role": "system", "content": SYSTEM_PROMPT + " Keep your response under 2000 characters to fit in a Discord message."},
+                        {"role": "user", "content": query},
+                    ]
+                    response = await self.llm_provider.generate_completion_sync(messages, max_tokens=1024)
                     
-                return content
-            
-            # 2. Process tasks in parallel
-            print(f"Processing {len(decomposition['tasks'])} tasks in parallel...")
-            tasks = decomposition["tasks"]
-            for i, task in enumerate(tasks):
-                print(f"Task {i+1}: {task['subject']}")
-            
-            task_results = await asyncio.gather(
-                *[self.process_task(task) for task in tasks]
-            )
-            
-            # 3. Synthesize results
-            print("Synthesizing results...")
-            synthesis = await self.synthesis_generator.generate_synthesis(query, task_results)
-            
-            content = synthesis["content"]
-            
-            # Final check to ensure response is within Discord's limit
-            if len(content) > 2000:
-                print(f"Warning: Response too long ({len(content)} chars). Truncating to 2000 chars.")
-                content = content[:1997] + "..."
+                    content = response["content"]
+                    if len(content) > 2000:
+                        print("⚠️ Fallback response too long, truncating...")
+                        content = content[:1997] + "..."
+                    
+                    print("✅ Direct response ready!")
+                    return content
                 
-            return content
+                print(f"⚡ Processing {len(decomposition['tasks'])} tasks in parallel...")
+                tasks = decomposition["tasks"]
+                for i, task in enumerate(tasks):
+                    print(f"📋 Task {i+1}: {task['subject']}")
+                
+                task_results = await asyncio.gather(
+                    *[self.process_task(task) for task in tasks]
+                )
+                
+                print("🔄 Synthesizing results...")
+                synthesis = await self.synthesis_generator.generate_synthesis(query, task_results)
+                
+                content = synthesis["content"]
+                
+                if len(content) > 2000:
+                    print("⚠️ Synthesized response too long, truncating...")
+                    content = content[:1997] + "..."
+                
+                print("✨ Final response ready!")
+                return content
         except Exception as e:
             error_message = f"An error occurred while processing your request: {str(e)}"
-            print(f"Error in run method: {str(e)}")
+            print(f"❌ Error in run method: {str(e)}")
             import traceback
             traceback.print_exc()
             return error_message
