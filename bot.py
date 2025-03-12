@@ -57,8 +57,11 @@ async def on_message(message: discord.Message):
     logger.info(f"Processing message from {message.author}: {message.content}")
     response = await agent.run(message)
 
-    # Simply send the response - our agent will ensure it's under Discord's limit
-    await message.reply(response)
+    # If response is None, the agent has already sent the response directly
+    # This happens with multi-part responses or when special handling is needed
+    if response is not None:
+        # Send the response - our agent will ensure it's under Discord's limit
+        await message.reply(response)
 
 
 # Commands
