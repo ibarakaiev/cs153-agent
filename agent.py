@@ -366,7 +366,7 @@ class DirectionReviewer:
     
     async def review_direction(self, direction: Dict[str, str], literature_context: str) -> Dict[str, Any]:
         """
-        Review a single research direction for feasibility, novelty, and impact
+        Enhanced review of research direction with gap analysis and implementation pathway
         
         Args:
             direction: Dictionary containing the research direction details
@@ -376,41 +376,76 @@ class DirectionReviewer:
             Dictionary with the review results
         """
         # Create a comprehensive review prompt
-        review_prompt = f"""
-        Evaluate the following research direction based on the literature context:
-        
-        RESEARCH DIRECTION: {direction.get('title', 'Untitled')}
-        
-        RESEARCH QUESTION: {direction.get('question', 'No question provided')}
-        
-        RATIONALE: {direction.get('rationale', 'No rationale provided')}
-        
-        LITERATURE CONTEXT:
-        {literature_context[:2000]}
-        
-        REQUIRED OUTPUT FORMAT - USE THESE EXACT SECTION HEADERS WITH COLONS:
-        
-        FEASIBILITY: [Detailed analysis of how feasible this research direction is]
-        
-        NOVELTY: [Assessment of how novel this direction is compared to existing research]
-        
-        IMPACT: [Evaluation of potential impact if successful]
-        
-        PROS: [List key advantages of this research direction]
-        
-        CONS: [List important limitations or challenges]
-        
-        RESOURCES: [Outline resources needed for this research]
-        
-        PRIORITY: [Rate as HIGH, MEDIUM, or LOW priority]
-        """
+        review_prompt = f"""Evaluate this research direction against current literature:
+
+DIRECTION: {direction.get('title', 'Untitled')}
+QUESTION: {direction.get('question', 'No question provided')}
+RATIONALE: {direction.get('rationale', 'No rationale provided')}
+ADDRESSING GAP: {direction.get('gap_addressed', 'Not specified')}
+
+LITERATURE CONTEXT:
+{literature_context[:2000]}
+
+REQUIRED ANALYSIS SECTIONS:
+
+1. GAP VALIDATION:
+- Is this truly a gap in current research?
+- What evidence supports this?
+- Have others attempted to address it?
+
+2. TECHNICAL FEASIBILITY:
+- Required capabilities
+- Technical prerequisites
+- Potential roadblocks
+- Timeline estimate
+
+3. RESEARCH IMPACT:
+- Scientific significance
+- Practical applications
+- Broader implications
+- Risk/reward assessment
+
+4. RESOURCE REQUIREMENTS:
+- Technical expertise needed
+- Computing resources
+- Data requirements
+- Collaboration needs
+
+5. COMPETITIVE ANALYSIS:
+- Similar research efforts
+- Unique advantages
+- Potential competitors
+- First-mover benefits
+
+6. IMPLEMENTATION PATHWAY:
+- Critical milestones
+- Key experiments
+- Validation methods
+- Success metrics
+
+PRIORITY RATING:
+Score each category (1-5):
+- Gap Significance: [score]
+- Technical Feasibility: [score]
+- Potential Impact: [score]
+- Resource Availability: [score]
+- Competitive Advantage: [score]
+
+FINAL VERDICT:
+[HIGH/MEDIUM/LOW] priority because [concise explanation]
+"""
         
         # Get review from LLM with stronger formatting instructions
         response = await self.llm_provider.generate_completion_sync(
             [
-                {"role": "system", "content": """You are a research evaluator who analyzes research directions for feasibility, novelty, and impact.
+                {"role": "system", "content": """You are a research direction evaluator specializing in:
+1. Validating research gaps
+2. Assessing technical feasibility
+3. Evaluating potential impact
+4. Resource planning
+5. Competitive analysis
 
-You MUST follow the output format instructions precisely, using the exact section headers requested with the exact capitalization shown."""},
+Provide concrete, specific assessments backed by the literature context."""},
                 {"role": "user", "content": review_prompt}
             ]
         )
@@ -420,13 +455,13 @@ You MUST follow the output format instructions precisely, using the exact sectio
         review = {
             "title": direction.get('title', 'Untitled'),
             "question": direction.get('question', 'No question provided'),
-            "feasibility": self._extract_section(review_content, "FEASIBILITY"),
-            "novelty": self._extract_section(review_content, "NOVELTY"),
-            "impact": self._extract_section(review_content, "IMPACT"),
-            "pros": self._extract_section(review_content, "PROS"),
-            "cons": self._extract_section(review_content, "CONS"),
-            "resources": self._extract_section(review_content, "RESOURCES"),
-            "priority": self._extract_section(review_content, "PRIORITY"),
+            "feasibility": self._extract_section(review_content, "TECHNICAL FEASIBILITY"),
+            "novelty": self._extract_section(review_content, "GAP VALIDATION"),
+            "impact": self._extract_section(review_content, "RESEARCH IMPACT"),
+            "pros": self._extract_section(review_content, "UNIQUE ADVANTAGES"),
+            "cons": self._extract_section(review_content, "POTENTIAL ROADBLOCKS"),
+            "resources": self._extract_section(review_content, "RESOURCE REQUIREMENTS"),
+            "priority": self._extract_section(review_content, "FINAL VERDICT"),
         }
         
         return review
@@ -467,31 +502,57 @@ You MUST follow the output format instructions precisely, using the exact sectio
             "count": len(reviews)
         }
     
-    async def _generate_comparison(self, directions: List[Dict[str, str]], reviews: List[Dict[str, str]]) -> str:
-        """Generate a comparison summary of all research directions"""
-        
-        # Create a summarized version of all reviews for the comparison
-        reviews_summary = ""
+    def _format_reviews_summary(self, reviews: List[Dict[str, str]]) -> str:
+        """Format reviews into a concise summary for comparison"""
+        if not reviews:
+            return "No reviews available."
+            
+        summary = ""
         for i, review in enumerate(reviews):
-            reviews_summary += f"DIRECTION {i+1}: {review.get('title', 'Untitled')}\n"
-            reviews_summary += f"Question: {review.get('question', 'Not specified')}\n"
-            reviews_summary += f"Feasibility: {review.get('feasibility', 'Not evaluated')}\n"
-            reviews_summary += f"Novelty: {review.get('novelty', 'Not evaluated')}\n"
-            reviews_summary += f"Impact: {review.get('impact', 'Not evaluated')}\n\n"
+            title = review.get("title", f"Direction {i+1}")
+            summary += f"DIRECTION {i+1}: {title}\n"
+            summary += f"QUESTION: {review.get('question', 'Not specified')}\n"
+            summary += f"FEASIBILITY: {review.get('feasibility', 'Not evaluated')[:150]}...\n"
+            summary += f"IMPACT: {review.get('impact', 'Not evaluated')[:150]}...\n"
+            summary += f"PRIORITY: {review.get('priority', 'Not specified')}\n\n"
+            
+        return summary
+    
+    async def _generate_comparison(self, directions: List[Dict[str, str]], reviews: List[Dict[str, str]]) -> str:
+        """Generate a strategic comparison of research directions"""
         
-        comparison_prompt = f"""
-        Compare the following research directions that have been reviewed:
-        
-        {reviews_summary}
-        
-        Please provide:
-        1. A ranked list of these directions from most to least promising
-        2. Key differentiators between the directions
-        3. Any synergies or combinations that might be beneficial
-        4. Overall recommendation on which direction(s) to pursue
-        
-        Format your response using clear headings and concise explanations.
-        """
+        comparison_prompt = f"""Compare these evaluated research directions:
+
+{self._format_reviews_summary(reviews)}
+
+Provide analysis in these sections:
+
+1. STRATEGIC RANKING:
+- Rank directions by overall promise
+- Explain ranking rationale
+- Note key differentiators
+
+2. RESOURCE OPTIMIZATION:
+- Identify shared resources
+- Note potential synergies
+- Suggest parallel efforts
+
+3. RISK PORTFOLIO:
+- Balance of risk/reward
+- Diversification strategy
+- Fallback options
+
+4. EXECUTION STRATEGY:
+- Recommended sequence
+- Critical dependencies
+- Early validation points
+
+5. FINAL RECOMMENDATION:
+- Primary direction
+- Supporting directions
+- Key success factors
+
+Keep response under 2000 chars. Be specific and actionable."""
         
         response = await self.llm_provider.generate_completion_sync(
             [
@@ -1036,6 +1097,31 @@ class MistralAgent:
         self.directions_generator = ResearchDirectionsGenerator(self.llm_provider)
         self.direction_reviewer = DirectionReviewer(self.llm_provider)
         self.recommendation_synthesizer = RecommendationSynthesizer(self.llm_provider)
+
+    def _extract_section(self, content: str, section_name: str) -> str:
+        """Extract a specific section from the structured content with better handling of variations"""
+        # Try exact format first (SECTION_NAME:)
+        pattern = f"{section_name}:(.*?)(?:(?:[A-Z_]+:)|$)"
+        match = re.search(pattern, content, re.DOTALL)
+        if match:
+            return match.group(1).strip()
+        
+        # Try variations with flexible capitalization and optional underscore/space
+        # This will match "Next Steps:", "NEXT STEPS:", "next_steps:", etc.
+        section_pattern = section_name.replace('_', '[_ ]?')
+        pattern = f"(?i){section_pattern}:(.*?)(?:(?:[A-Za-z _]+:)|$)"
+        match = re.search(pattern, content, re.DOTALL)
+        if match:
+            return match.group(1).strip()
+        
+        # Try looking for section with ## or other markdown headers
+        pattern = f"(?i)(?:##\\s*|\\*\\*\\s*){section_pattern.replace('_', '[_ ]?')}(?:\\s*:|\\s*\\*\\*)?\\s*(.*?)(?:(?:##|\\*\\*)[A-Za-z _]+|$)"
+        match = re.search(pattern, content, re.DOTALL)
+        if match:
+            return match.group(1).strip()
+        
+        # If all else fails, return empty string
+        return ""
 
     async def process_task(self, task: Dict[str, str]) -> Dict[str, Any]:
         """Process a single task"""
